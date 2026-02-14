@@ -1,0 +1,21 @@
+# Mac 系統檔
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+env/
+
+# C++ 編譯檔
+*.o
+*.obj
+*.exe
+*.dSYM/
+build/
+bin/
+
+.vscode/
+
+*.bin
+*.pth
