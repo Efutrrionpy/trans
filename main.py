@@ -92,14 +92,20 @@ def run_compare(prompt, max_length):
     vocab_bin = os.path.join(weights_dir, "vocab.bin")
 
     cpp_backends = [
-        #("cpp_naive", os.path.join(cpp_dir, "gpt2")),
-        ("cpp_simd",  os.path.join(cpp_dir, "gpt2_fast")),
-        ("cpp_kv",    os.path.join(cpp_dir, "gpt2_kv")),
+        #("cpp_naive", os.path.join(cpp_dir, "gpt2"), model_bin),
+        ("cpp_simd",  os.path.join(cpp_dir, "gpt2_fast"), model_bin),
+        ("cpp_kv",    os.path.join(cpp_dir, "gpt2_kv"),   model_bin),
+        ("cpp_kv2",   os.path.join(cpp_dir, "gpt2_kv2"),  model_bin),
+        ("cpp_q8",    os.path.join(cpp_dir, "gpt2_q8"),
+                      os.path.join(weights_dir, "model_q8.bin")),
     ]
 
-    for name, exe_path in cpp_backends:
+    for name, exe_path, cmodel in cpp_backends:
         if not os.path.exists(exe_path):
             print(f"\n>>> Skipping {name}: {exe_path} not found (run 'cd cpp && make')")
+            continue
+        if not os.path.exists(cmodel):
+            print(f"\n>>> Skipping {name}: {cmodel} not found")
             continue
 
         print(f"\n>>> Running {name}...")
@@ -108,7 +114,7 @@ def run_compare(prompt, max_length):
             "--ids", ids_str,
             "--max_length", str(max_length),
             "--temperature", "0",
-            "--model", model_bin,
+            "--model", cmodel,
             "--vocab", vocab_bin,
             "--machine",
         ]

@@ -6,7 +6,11 @@
 #include <string>
 #include <vector>
 
-#ifdef USE_KVCACHE
+#ifdef USE_Q8
+#include "model_q8_kv.h"
+#elif defined(USE_KVCACHE_V2)
+#include "model_kvcache_v2.h"
+#elif defined(USE_KVCACHE)
 #include "model_kvcache.h"
 #elif defined(USE_SIMD)
 #include "model_simd.h"
