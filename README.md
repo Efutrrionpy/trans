@@ -14,7 +14,40 @@ A multi-backend GPT-2 inference engine built from the ground up. The same model 
 | **cpp_kv2** | C++ | KV Cache + Zero-Alloc + Op Fusion | ~125 |
 | **cpp_q8** | C++ | **INT8 Quantized** + KV Cache (4x smaller) | ~92 |
 
+```
+cpp_kv        ████████████████████████████████████████ 130
+cpp_kv2       ██████████████████████████████████████   125
+cpp_q8        ████████████████████████████              92
+cpp_simd      ███████████████                           48
+torch_native  ██████████                                31
+hf            ████████                                  27
+numpy         █                                          4
+                                                    tok/sec
+```
+
 *Benchmarked on Apple Silicon, 100 tokens, greedy decoding.*
+
+### How each optimization stacks up
+
+```mermaid
+flowchart LR
+    A["naive C++<br/>triple-loop matmul"] -->|"cblas_sgemm + NEON"| B["cpp_simd<br/>~48 tok/s"]
+    B -->|"KV cache"| C["cpp_kv<br/>~130 tok/s"]
+    C -->|"zero-alloc + op fusion"| D["cpp_kv2<br/>~125 tok/s"]
+    C -->|"INT8 quantize"| E["cpp_q8<br/>~92 tok/s<br/>4x smaller"]
+
+    classDef win fill:#dcfce7,stroke:#22c55e,color:#0f172a
+    classDef flat fill:#f1f5f9,stroke:#94a3b8,color:#0f172a
+    classDef trade fill:#fef3c7,stroke:#f59e0b,color:#0f172a
+    class B,C win
+    class A,D flat
+    class E trade
+```
+
+The KV cache is the single biggest win — a 2.7x jump on its own. The `kv2`
+zero-alloc and fusion work did **not** pay off on top of it (~125 vs ~130):
+once the cache is in place, allocation is no longer the bottleneck. INT8 trades
+throughput for a 4x smaller model.
 
 ## Quick Start
 
@@ -42,6 +75,7 @@ python main.py --compare --prompt "The meaning of life is" --max_length 100
 ## Project Structure
 
 ```
+├── LICENSE                    # MIT
 ├── main.py                    # Entry point + cross-backend benchmark
 ├── export_weights.py          # GPT-2 → weights/model.bin + vocab.bin
 ├── quantize_weights.py        # model.bin → model_q8.bin (INT8 per-channel)
@@ -72,15 +106,106 @@ python main.py --compare --prompt "The meaning of life is" --max_length 100
 
 All backends share the same weight files and produce **identical output** under greedy decoding (including INT8).
 
-```
-export_weights.py ──► weights/model.bin ──┬──► hf_backend.py
-                                          ├──► torch_native_backend.py
-                                          ├──► numpy_backend.py
-                                          ├──► cpp/gpt2_fast  (SIMD)
-                                          ├──► cpp/gpt2_kv    (KV Cache)
-                                          └──► cpp/gpt2_kv2   (Fused Ops)
+```mermaid
+flowchart LR
+    GPT2["GPT-2 weights<br/>(HuggingFace)"] --> EXP["export_weights.py"]
+    EXP --> BIN["model.bin<br/>FP32 · 475 MB"]
+    EXP --> VOCAB["vocab.bin<br/>50,257 tokens"]
+    BIN --> QUANT["quantize_weights.py"] --> Q8["model_q8.bin<br/>INT8 · 120 MB"]
 
-quantize_weights.py ► weights/model_q8.bin ──► cpp/gpt2_q8   (INT8)
+    subgraph PY ["Python backends"]
+        direction TB
+        HFB["hf"]
+        TNB["torch_native"]
+        NPB["numpy"]
+    end
+
+    subgraph CPP ["C++ backends"]
+        direction TB
+        FAST["cpp_simd"]
+        KV["cpp_kv"]
+        KV2["cpp_kv2"]
+    end
+
+    BIN --> PY
+    BIN --> CPP
+    Q8 --> QB["cpp_q8"]
+
+    classDef weight fill:#dbeafe,stroke:#3b82f6,color:#0f172a
+    classDef script fill:#e0e7ff,stroke:#6366f1,color:#0f172a
+    classDef quant fill:#fef3c7,stroke:#f59e0b,color:#0f172a
+    class BIN,VOCAB weight
+    class EXP,QUANT script
+    class Q8,QB quant
+```
+
+### Forward pass
+
+Pre-LN transformer, 12 blocks, with the LM head tied to the token embedding.
+
+```mermaid
+flowchart TB
+    IDS["input_ids · (B, T)"] --> WTE["token embedding · wte"]
+    IDS --> WPE["position embedding · wpe"]
+    WTE --> ADD(("+"))
+    WPE --> ADD
+
+    ADD --> X0["x · (B, T, 768)"]
+
+    subgraph BLOCK ["Transformer block — repeated 12x"]
+        direction TB
+        LN1["layer_norm · ln_1"] --> ATT["causal self-attention<br/>12 heads · tril mask"]
+        ATT --> R1(("+"))
+        R1 --> LN2["layer_norm · ln_2"]
+        LN2 --> MLP["MLP<br/>768 → 3072 → GELU → 768"]
+        MLP --> R2(("+"))
+        R1 --> R2
+    end
+
+    X0 --> LN1
+    X0 --> R1
+    R2 --> LNF["layer_norm · ln_f"]
+    LNF --> HEAD["LM head<br/>x @ wte.T — weight tying"]
+    HEAD --> LOGITS["logits · (B, T, 50257)"]
+
+    classDef resid fill:#fce7f3,stroke:#ec4899,color:#0f172a
+    classDef io fill:#dbeafe,stroke:#3b82f6,color:#0f172a
+    class R1,R2,ADD resid
+    class IDS,LOGITS io
+```
+
+The two `+` nodes inside the block are the residual connections — note that the
+normalization sits *inside* each branch, not on the residual path.
+
+### Why the KV cache wins
+
+Without a cache, every step re-runs attention over the whole prefix. With one,
+each step computes a single token and appends its K/V to the cache.
+
+```mermaid
+flowchart LR
+    subgraph NO ["Without KV cache — work grows every step"]
+        direction TB
+        N1["step 1 · recompute 1 token"]
+        N2["step 2 · recompute 2 tokens"]
+        N3["step 3 · recompute 3 tokens"]
+        N4["step 100 · recompute 100 tokens"]
+        N1 --> N2 --> N3 -.-> N4
+    end
+
+    subgraph YES ["With KV cache — constant work per step"]
+        direction TB
+        Y1["step 1 · compute 1 token, cache K/V"]
+        Y2["step 2 · compute 1 token, append"]
+        Y3["step 3 · compute 1 token, append"]
+        Y4["step 100 · compute 1 token, append"]
+        Y1 --> Y2 --> Y3 -.-> Y4
+    end
+
+    classDef slow fill:#fee2e2,stroke:#ef4444,color:#0f172a
+    classDef fast fill:#dcfce7,stroke:#22c55e,color:#0f172a
+    class N1,N2,N3,N4 slow
+    class Y1,Y2,Y3,Y4 fast
 ```
 
 ## Key Optimizations
