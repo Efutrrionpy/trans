@@ -40,11 +40,10 @@ def mlp(x: np.ndarray,
     return x
 
 
-def causal_self_attention(
-        x: np.ndarray,
-        c_attn_w: np.ndarray, c_attn_b: np.ndarray,
-        c_proj_w: np.ndarray, c_proj_b: np.ndarray,
-        n_head: int) -> np.ndarray:
+def causal_self_attention(x: np.ndarray,
+                          c_attn_w: np.ndarray, c_attn_b: np.ndarray,
+                          c_proj_w: np.ndarray, c_proj_b: np.ndarray,
+                          n_head: int) -> np.ndarray:
 
     B, T, C = x.shape
     head_dim = C // n_head

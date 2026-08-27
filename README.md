@@ -111,4 +111,7 @@ For each weight row:  scale = max(|row|) / 127
 
 ## License
 
-Educational project. GPT-2 weights from OpenAI via HuggingFace.
+MIT — see [LICENSE](LICENSE).
+
+Educational project. GPT-2 weights are from OpenAI via HuggingFace and carry
+their own license; the MIT license here covers this repository's code only.

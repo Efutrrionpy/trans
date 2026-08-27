@@ -15,6 +15,13 @@ env/
 build/
 bin/
 
+# C++ 執行檔（由 cpp/Makefile 產生）
+cpp/gpt2
+cpp/gpt2_fast
+cpp/gpt2_kv
+cpp/gpt2_kv2
+cpp/gpt2_q8
+
 .vscode/
 
 *.bin
