@@ -23,6 +23,10 @@ The KV cache is the single biggest win — 2.7x on its own. Zero-alloc and op
 fusion on top of it (`kv2`) did not pay off; INT8 trades throughput for a 4x
 smaller model.
 
+Not charted: the naive triple-loop C++ baseline runs at **0.5 tok/sec**, so
+BLAS + NEON alone is a ~95x end-to-end speedup. Add `--include-naive` to
+benchmark it (100 tokens takes about three minutes).
+
 ## Quick Start
 
 ```bash
@@ -45,6 +49,18 @@ python main.py --backend hf --prompt "Hello world" --max_length 50
 # 6. Benchmark all of them
 python main.py --compare --prompt "The meaning of life is" --max_length 100
 ```
+
+### Larger models
+
+Nothing is hardcoded to GPT-2 small — every backend reads its dimensions from
+the `model.bin` header, so any GPT-2 size works:
+
+```bash
+python export_weights.py --model_name gpt2-medium --output_dir weights_medium
+python main.py --compare --weights weights_medium/model.bin
+```
+
+Verified on `gpt2-medium` (355M, 24 layers, 1024d): all backends still agree.
 
 ## Architecture
 

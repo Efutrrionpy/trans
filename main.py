@@ -50,7 +50,7 @@ def generate(engine, tokenizer, input_ids, max_length, temperature):
 # =============================================================================
 # Compare Mode
 # =============================================================================
-def run_compare(prompt, max_length):
+def run_compare(prompt, max_length, include_naive=False, weights_path="weights/model.bin"):
     """Load all backends (Python + C++), run greedy decoding, compare outputs and speed."""
     import time
     import subprocess
@@ -66,14 +66,14 @@ def run_compare(prompt, max_length):
     results = {}  # name -> {"text": str, "time": float, "tokens": int}
 
     # Get input IDs from the first backend's tokenizer
-    first_tok, _ = get_backend(AVAILABLE_BACKENDS[0])
+    first_tok, _ = get_backend(AVAILABLE_BACKENDS[0], weights_path)
     input_ids = first_tok.encode(prompt)
     ids_str = " ".join(str(i) for i in input_ids)
     print(f"\n  Input IDs: {input_ids}")
 
     for name in AVAILABLE_BACKENDS:
         print(f"\n>>> Loading backend: {name}")
-        tokenizer, engine = get_backend(name)
+        tokenizer, engine = get_backend(name, weights_path)
         print(f">>> Running {name}...")
         t0 = time.perf_counter()
         gen_ids, _ = generate(engine, tokenizer, input_ids, max_length, temperature=0)
@@ -87,18 +87,26 @@ def run_compare(prompt, max_length):
     # --- 2. Run C++ backends via subprocess ---
     script_dir = os.path.dirname(os.path.abspath(__file__))
     cpp_dir = os.path.join(script_dir, "cpp")
-    weights_dir = os.path.join(script_dir, "weights")
-    model_bin = os.path.join(weights_dir, "model.bin")
+    # The C++ builds read the same files, so derive their paths from --weights.
+    model_bin = os.path.abspath(weights_path)
+    weights_dir = os.path.dirname(model_bin)
     vocab_bin = os.path.join(weights_dir, "vocab.bin")
 
     cpp_backends = [
-        #("cpp_naive", os.path.join(cpp_dir, "gpt2"), model_bin),
         ("cpp_simd",  os.path.join(cpp_dir, "gpt2_fast"), model_bin),
         ("cpp_kv",    os.path.join(cpp_dir, "gpt2_kv"),   model_bin),
         ("cpp_kv2",   os.path.join(cpp_dir, "gpt2_kv2"),  model_bin),
         ("cpp_q8",    os.path.join(cpp_dir, "gpt2_q8"),
                       os.path.join(weights_dir, "model_q8.bin")),
     ]
+
+    # The naive triple-loop build is the baseline the SIMD numbers are measured
+    # against, but it has no KV cache: ~0.5 tok/sec, so 100 tokens takes over
+    # three minutes. Opt in with --include-naive.
+    if include_naive:
+        cpp_backends.insert(0, ("cpp_naive", os.path.join(cpp_dir, "gpt2"), model_bin))
+    else:
+        print("\n>>> Skipping cpp_naive (~0.5 tok/sec). Use --include-naive to run it.")
 
     for name, exe_path, cmodel in cpp_backends:
         if not os.path.exists(exe_path):
@@ -181,18 +189,23 @@ def main():
     parser.add_argument("--max_length", type=int, default=50, help="Max new tokens to generate")
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
     parser.add_argument("--compare", action="store_true", help="Run all backends and compare outputs")
+    parser.add_argument("--include-naive", action="store_true",
+                        help="Include the naive triple-loop C++ baseline in --compare (slow: ~0.5 tok/sec)")
+    parser.add_argument("--weights", type=str, default="weights/model.bin",
+                        help="Path to model.bin. Any GPT-2 size works (gpt2-medium, gpt2-large, ...)")
 
     args = parser.parse_args()
 
     if args.compare:
-        run_compare(args.prompt, args.max_length)
+        run_compare(args.prompt, args.max_length,
+                    include_naive=args.include_naive, weights_path=args.weights)
         return
 
     # --- Normal single-backend mode ---
     print(f"Using Backend: {args.backend}")
     print(f"Prompt: {args.prompt}")
 
-    tokenizer, engine = get_backend(args.backend)
+    tokenizer, engine = get_backend(args.backend, args.weights)
     input_ids = tokenizer.encode(args.prompt)
     print(f"Input IDs: {input_ids}")
 
